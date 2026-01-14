@@ -26,3 +26,27 @@ export interface TextElementDragState {
   elementWidth: number;
   elementHeight: number;
 }
+
+export type MediaTransformMode = "move" | "scale";
+export type ScaleHandle =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
+export interface MediaTransformState {
+  isTransforming: boolean;
+  mode: MediaTransformMode | null;
+  scaleHandle: ScaleHandle | null;
+  elementId: string | null;
+  trackId: string | null;
+  startX: number;
+  startY: number;
+  initialScale: number;
+  initialOffsetX: number;
+  initialOffsetY: number;
+  // For scale: element center position and initial distance from handle to center
+  elementCenterX: number;
+  elementCenterY: number;
+  initialDistance: number;
+}

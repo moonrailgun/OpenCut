@@ -49,6 +49,10 @@ export function useFrameCache(options: FrameCacheOptions = {}) {
         trimStart: number;
         trimEnd: number;
         mediaId?: string;
+        // Media transform properties
+        scale?: number;
+        offsetX?: number;
+        offsetY?: number;
         // Text-specific properties
         content?: string;
         fontSize?: number;
@@ -85,6 +89,9 @@ export function useFrameCache(options: FrameCacheOptions = {}) {
                 trimStart: element.trimStart,
                 trimEnd: element.trimEnd,
                 mediaId: mediaElement.mediaId,
+                scale: mediaElement.scale,
+                offsetX: mediaElement.offsetX,
+                offsetY: mediaElement.offsetY,
               });
             } else if (element.type === "text") {
               const textElement = element as TextElement;

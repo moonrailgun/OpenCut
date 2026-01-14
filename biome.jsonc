@@ -95,6 +95,7 @@
       "trailingCommas": "es5",
       "arrowParentheses": "always",
       "lineWidth": 80,
+      "lineEnding": "lf",
       "bracketSpacing": true,
       "bracketSameLine": false,
       "quoteStyle": "double",

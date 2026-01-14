@@ -8,19 +8,24 @@ import { usePlaybackStore } from "@/stores/playback-store";
 import { useEditorStore } from "@/stores/editor-store";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, Expand, SkipBack, SkipForward } from "lucide-react";
-import { useState, useRef, useEffect, useCallback } from "react";
-import { renderTimelineFrame } from "@/lib/timeline-renderer";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { formatTimeCode } from "@/lib/time";
 import { EditableTimecode } from "@/components/ui/editable-timecode";
-import { useFrameCache } from "@/hooks/use-frame-cache";
 import { useSceneStore } from "@/stores/scene-store";
+import { TrackCanvas, BackgroundCanvas } from "./preview-layers";
 import {
   DEFAULT_CANVAS_SIZE,
   DEFAULT_FPS,
   useProjectStore,
 } from "@/stores/project-store";
-import { TextElementDragState } from "@/types/editor";
+import {
+  TextElementDragState,
+  MediaTransformState,
+  ScaleHandle,
+} from "@/types/editor";
+import type { TProject } from "@/types/project";
+import { MediaElement } from "@/types/timeline";
 import {
   Popover,
   PopoverContent,
@@ -39,21 +44,21 @@ interface ActiveElement {
 }
 
 export function PreviewPanel() {
-  const { tracks, getTotalDuration, updateTextElement } = useTimelineStore();
+  const {
+    tracks,
+    getTotalDuration,
+    updateTextElement,
+    updateMediaElement,
+    selectedElements,
+    selectElement,
+  } = useTimelineStore();
   const { mediaFiles } = useMediaStore();
   const { currentTime, toggle, setCurrentTime } = usePlaybackStore();
   const { isPlaying, volume, muted } = usePlaybackStore();
   const { activeProject } = useProjectStore();
   const { currentScene } = useSceneStore();
   const previewRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { getCachedFrame, cacheFrame, invalidateCache, preRenderNearbyFrames } =
-    useFrameCache();
-  const lastFrameTimeRef = useRef(0);
-  const renderSeqRef = useRef(0);
-  const offscreenCanvasRef = useRef<OffscreenCanvas | HTMLCanvasElement | null>(
-    null
-  );
+  const isTransformingRef = useRef(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioGainRef = useRef<GainNode | null>(null);
@@ -80,6 +85,23 @@ export function PreviewPanel() {
     elementWidth: 0,
     elementHeight: 0,
   });
+
+  const [mediaTransformState, setMediaTransformState] =
+    useState<MediaTransformState>({
+      isTransforming: false,
+      mode: null,
+      scaleHandle: null,
+      elementId: null,
+      trackId: null,
+      startX: 0,
+      startY: 0,
+      initialScale: 1,
+      initialOffsetX: 0,
+      initialOffsetY: 0,
+      elementCenterX: 0,
+      elementCenterY: 0,
+      initialDistance: 0,
+    });
 
   useEffect(() => {
     const updatePreviewSize = () => {
@@ -221,16 +243,6 @@ export function PreviewPanel() {
     };
   }, [dragState, previewDimensions, canvasSize, updateTextElement]);
 
-  // Clear the frame cache when background settings change since they affect rendering
-  useEffect(() => {
-    invalidateCache();
-  }, [
-    mediaFiles,
-    activeProject?.backgroundColor,
-    activeProject?.backgroundType,
-    invalidateCache,
-  ]);
-
   const handleTextMouseDown = (
     e: React.MouseEvent<HTMLDivElement>,
     element: any,
@@ -255,6 +267,271 @@ export function PreviewPanel() {
       elementHeight: rect.height,
     });
   };
+
+  // Handle media element move (drag from center)
+  const handleMediaMoveStart = (
+    e: React.MouseEvent,
+    element: MediaElement,
+    trackId: string
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isTransformingRef.current = true;
+
+    setMediaTransformState({
+      isTransforming: true,
+      mode: "move",
+      scaleHandle: null,
+      elementId: element.id,
+      trackId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialScale: element.scale ?? 1,
+      initialOffsetX: element.offsetX ?? 0,
+      initialOffsetY: element.offsetY ?? 0,
+      elementCenterX: 0,
+      elementCenterY: 0,
+      initialDistance: 0,
+    });
+  };
+
+  // Handle media element scale (drag from corner handles)
+  const handleMediaScaleStart = (
+    e: React.MouseEvent,
+    element: MediaElement,
+    trackId: string,
+    handle: ScaleHandle
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isTransformingRef.current = true;
+
+    // Get element center position in screen coordinates
+    const previewRect = previewRef.current?.getBoundingClientRect();
+    if (!previewRect) return;
+
+    const mediaItem = mediaFiles.find((m) => m.id === element.mediaId);
+    if (!mediaItem) return;
+
+    const scaleRatio = previewDimensions.width / canvasSize.width;
+    const offsetX = (element.offsetX ?? 0) * scaleRatio;
+    const offsetY = (element.offsetY ?? 0) * scaleRatio;
+
+    // Element center in screen coordinates
+    const elementCenterX =
+      previewRect.left + previewDimensions.width / 2 + offsetX;
+    const elementCenterY =
+      previewRect.top + previewDimensions.height / 2 + offsetY;
+
+    // Calculate initial distance from mouse to element center
+    const dx = e.clientX - elementCenterX;
+    const dy = e.clientY - elementCenterY;
+    const initialDistance = Math.sqrt(dx * dx + dy * dy);
+
+    setMediaTransformState({
+      isTransforming: true,
+      mode: "scale",
+      scaleHandle: handle,
+      elementId: element.id,
+      trackId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialScale: element.scale ?? 1,
+      initialOffsetX: element.offsetX ?? 0,
+      initialOffsetY: element.offsetY ?? 0,
+      elementCenterX,
+      elementCenterY,
+      initialDistance: initialDistance || 1,
+    });
+  };
+
+  // Handle media transform mouse move and up
+  useEffect(() => {
+    if (!mediaTransformState.isTransforming) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - mediaTransformState.startX;
+      const deltaY = e.clientY - mediaTransformState.startY;
+      const scaleRatio = previewDimensions.width / canvasSize.width;
+
+      if (mediaTransformState.mode === "move") {
+        const newOffsetX =
+          mediaTransformState.initialOffsetX + deltaX / scaleRatio;
+        const newOffsetY =
+          mediaTransformState.initialOffsetY + deltaY / scaleRatio;
+
+        if (mediaTransformState.trackId && mediaTransformState.elementId) {
+          updateMediaElement(
+            mediaTransformState.trackId,
+            mediaTransformState.elementId,
+            {
+              offsetX: newOffsetX,
+              offsetY: newOffsetY,
+            }
+          );
+        }
+      } else if (mediaTransformState.mode === "scale") {
+        // Calculate current distance from mouse to element center
+        const dx = e.clientX - mediaTransformState.elementCenterX;
+        const dy = e.clientY - mediaTransformState.elementCenterY;
+        const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+        // Scale ratio based on distance change
+        const distanceRatio =
+          currentDistance / mediaTransformState.initialDistance;
+        const newScale = Math.max(
+          0.1,
+          Math.min(5, mediaTransformState.initialScale * distanceRatio)
+        );
+
+        if (mediaTransformState.trackId && mediaTransformState.elementId) {
+          updateMediaElement(
+            mediaTransformState.trackId,
+            mediaTransformState.elementId,
+            { scale: newScale }
+          );
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setMediaTransformState((prev) => ({
+        ...prev,
+        isTransforming: false,
+        mode: null,
+        scaleHandle: null,
+      }));
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor =
+      mediaTransformState.mode === "move" ? "grabbing" : "nwse-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [mediaTransformState, previewDimensions, canvasSize, updateMediaElement]);
+
+  // Get the currently selected media element for transform overlay
+  const getSelectedMediaElement = useCallback((): {
+    element: MediaElement;
+    trackId: string;
+    mediaItem: MediaFile;
+  } | null => {
+    if (selectedElements.length !== 1) return null;
+
+    const { trackId, elementId } = selectedElements[0];
+    const track = tracks.find((t) => t.id === trackId);
+    const element = track?.elements.find((e) => e.id === elementId);
+
+    if (!element || element.type !== "media") return null;
+
+    // Check if element is visible at current time
+    const elementStart = element.startTime;
+    const elementEnd =
+      element.startTime +
+      (element.duration - element.trimStart - element.trimEnd);
+    if (currentTime < elementStart || currentTime >= elementEnd) return null;
+
+    const mediaItem = mediaFiles.find((m) => m.id === element.mediaId);
+    if (
+      !mediaItem ||
+      (mediaItem.type !== "video" && mediaItem.type !== "image")
+    )
+      return null;
+
+    return { element, trackId, mediaItem };
+  }, [selectedElements, tracks, mediaFiles, currentTime]);
+
+  const selectedMediaElement = getSelectedMediaElement();
+
+  const handlePreviewClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (isTransformingRef.current) {
+        isTransformingRef.current = false;
+        return;
+      }
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      // Get active elements at current time (already computed)
+      const elementsAtTime: ActiveElement[] = [];
+      [...tracks].reverse().forEach((track) => {
+        for (const element of track.elements) {
+          if (element.hidden) continue;
+          const elementStart = element.startTime;
+          const elementEnd =
+            element.startTime +
+            (element.duration - element.trimStart - element.trimEnd);
+
+          if (currentTime >= elementStart && currentTime < elementEnd) {
+            let mediaItem: MediaFile | null = null;
+            if (element.type === "media") {
+              mediaItem =
+                element.mediaId === "test"
+                  ? null
+                  : mediaFiles.find((item) => item.id === element.mediaId) ||
+                    null;
+            }
+            elementsAtTime.push({ element, track, mediaItem });
+          }
+        }
+      });
+
+      // Check from top to bottom (first in array = topmost visually)
+      for (const { element, track, mediaItem } of elementsAtTime) {
+        if (element.type === "media" && mediaItem) {
+          if (mediaItem.type === "video" || mediaItem.type === "image") {
+            const mediaElement = element as MediaElement;
+            const mediaW = mediaItem.width || previewDimensions.width;
+            const mediaH = mediaItem.height || previewDimensions.height;
+            const containScale = Math.min(
+              previewDimensions.width / mediaW,
+              previewDimensions.height / mediaH
+            );
+            const elementScale = mediaElement.scale ?? 1;
+            const finalScale = containScale * elementScale;
+
+            const drawW = mediaW * finalScale;
+            const drawH = mediaH * finalScale;
+
+            const scaleRatio = previewDimensions.width / canvasSize.width;
+            const offsetX = (mediaElement.offsetX ?? 0) * scaleRatio;
+            const offsetY = (mediaElement.offsetY ?? 0) * scaleRatio;
+
+            const left = (previewDimensions.width - drawW) / 2 + offsetX;
+            const top = (previewDimensions.height - drawH) / 2 + offsetY;
+
+            // Check if click is within element bounds
+            if (
+              clickX >= left &&
+              clickX <= left + drawW &&
+              clickY >= top &&
+              clickY <= top + drawH
+            ) {
+              selectElement(track.id, element.id);
+              return;
+            }
+          }
+        }
+      }
+    },
+    [
+      tracks,
+      currentTime,
+      mediaFiles,
+      previewDimensions,
+      canvasSize,
+      selectElement,
+    ]
+  );
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev);
@@ -292,19 +569,6 @@ export function PreviewPanel() {
   };
 
   const activeElements = getActiveElements();
-
-  // Ensure first frame after mount/seek renders immediately
-  useEffect(() => {
-    const onSeek = () => {
-      lastFrameTimeRef.current = -Infinity;
-      renderSeqRef.current++;
-    };
-    window.addEventListener("playback-seek", onSeek as EventListener);
-    lastFrameTimeRef.current = -Infinity;
-    return () => {
-      window.removeEventListener("playback-seek", onSeek as EventListener);
-    };
-  }, []);
 
   // Web Audio: schedule only on play/pause/seek/volume/mute changes
   useEffect(() => {
@@ -436,11 +700,11 @@ export function PreviewPanel() {
         } catch {}
       }
       playingSourcesRef.current.clear();
-      void scheduleNow();
+      scheduleNow().catch(() => {});
     };
 
     // Apply volume/mute changes immediately
-    void ensureAudioGraph();
+    ensureAudioGraph().catch(() => {});
 
     // Start/stop on play state changes
     for (const src of playingSourcesRef.current) {
@@ -450,7 +714,7 @@ export function PreviewPanel() {
     }
     playingSourcesRef.current.clear();
     if (isPlaying) {
-      void scheduleNow();
+      scheduleNow().catch(() => {});
     }
 
     window.addEventListener("playback-seek", onSeek as EventListener);
@@ -465,246 +729,8 @@ export function PreviewPanel() {
     };
   }, [isPlaying, volume, muted, mediaFiles]);
 
-  // Canvas: draw current frame with caching
-  useEffect(() => {
-    const draw = async () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const mainCtx = canvas.getContext("2d");
-      if (!mainCtx) return;
-
-      // Set canvas internal resolution to avoid blurry scaling
-      const displayWidth = Math.max(1, Math.floor(previewDimensions.width));
-      const displayHeight = Math.max(1, Math.floor(previewDimensions.height));
-      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-        canvas.width = displayWidth;
-        canvas.height = displayHeight;
-      }
-
-      // Throttle rendering to project FPS during playback only
-      const fps = activeProject?.fps || DEFAULT_FPS;
-      const minDelta = 1 / fps;
-      if (isPlaying) {
-        if (currentTime - lastFrameTimeRef.current < minDelta) {
-          return;
-        }
-        lastFrameTimeRef.current = currentTime;
-      }
-
-      const cachedFrame = getCachedFrame(
-        currentTime,
-        tracks,
-        mediaFiles,
-        activeProject,
-        currentScene?.id
-      );
-      if (cachedFrame) {
-        mainCtx.putImageData(cachedFrame, 0, 0);
-
-        // Pre-render nearby frames in background
-        if (!isPlaying) {
-          // Only during scrubbing to avoid interfering with playback
-          preRenderNearbyFrames(
-            currentTime,
-            tracks,
-            mediaFiles,
-            activeProject,
-            async (time: number) => {
-              const tempCanvas = document.createElement("canvas");
-              tempCanvas.width = displayWidth;
-              tempCanvas.height = displayHeight;
-              const tempCtx = tempCanvas.getContext("2d");
-              if (!tempCtx)
-                throw new Error("Failed to create temp canvas context");
-
-              await renderTimelineFrame({
-                ctx: tempCtx,
-                time,
-                canvasWidth: displayWidth,
-                canvasHeight: displayHeight,
-                tracks,
-                mediaFiles,
-                backgroundType: activeProject?.backgroundType,
-                blurIntensity: activeProject?.blurIntensity,
-                backgroundColor:
-                  activeProject?.backgroundType === "blur"
-                    ? undefined
-                    : activeProject?.backgroundColor || "#000000",
-                projectCanvasSize: canvasSize,
-              });
-
-              return tempCtx.getImageData(0, 0, displayWidth, displayHeight);
-            },
-            currentScene?.id,
-            3
-          );
-        } else {
-          // Small lookahead while playing
-          preRenderNearbyFrames(
-            currentTime,
-            tracks,
-            mediaFiles,
-            activeProject,
-            async (time: number) => {
-              const tempCanvas = document.createElement("canvas");
-              tempCanvas.width = displayWidth;
-              tempCanvas.height = displayHeight;
-              const tempCtx = tempCanvas.getContext("2d");
-              if (!tempCtx)
-                throw new Error("Failed to create temp canvas context");
-
-              await renderTimelineFrame({
-                ctx: tempCtx,
-                time,
-                canvasWidth: displayWidth,
-                canvasHeight: displayHeight,
-                tracks,
-                mediaFiles,
-                backgroundType: activeProject?.backgroundType,
-                blurIntensity: activeProject?.blurIntensity,
-                backgroundColor:
-                  activeProject?.backgroundType === "blur"
-                    ? undefined
-                    : activeProject?.backgroundColor || "#000000",
-                projectCanvasSize: canvasSize,
-              });
-
-              return tempCtx.getImageData(0, 0, displayWidth, displayHeight);
-            },
-            currentScene?.id,
-            1
-          );
-        }
-        return;
-      }
-
-      // Cache miss - render from scratch
-      if (!offscreenCanvasRef.current) {
-        const hasOffscreen =
-          typeof (globalThis as unknown as { OffscreenCanvas?: unknown })
-            .OffscreenCanvas !== "undefined";
-        if (hasOffscreen) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          offscreenCanvasRef.current = new (globalThis as any).OffscreenCanvas(
-            displayWidth,
-            displayHeight
-          ) as OffscreenCanvas;
-        } else {
-          const c = document.createElement("canvas");
-          c.width = displayWidth;
-          c.height = displayHeight;
-          offscreenCanvasRef.current = c;
-        }
-      }
-      // Ensure size matches
-      if (
-        offscreenCanvasRef.current &&
-        (offscreenCanvasRef.current as HTMLCanvasElement).getContext
-      ) {
-        const c = offscreenCanvasRef.current as HTMLCanvasElement;
-        if (c.width !== displayWidth || c.height !== displayHeight) {
-          c.width = displayWidth;
-          c.height = displayHeight;
-        }
-      } else {
-        const c = offscreenCanvasRef.current as OffscreenCanvas;
-        // @ts-ignore width/height exist on OffscreenCanvas in modern browsers
-        if (
-          (c as unknown as { width: number }).width !== displayWidth ||
-          (c as unknown as { height: number }).height !== displayHeight
-        ) {
-          // @ts-ignore
-          (c as unknown as { width: number }).width = displayWidth;
-          // @ts-ignore
-          (c as unknown as { height: number }).height = displayHeight;
-        }
-      }
-      const offscreenCanvas = offscreenCanvasRef.current as
-        | HTMLCanvasElement
-        | OffscreenCanvas;
-      const offCtx = (offscreenCanvas as HTMLCanvasElement).getContext
-        ? (offscreenCanvas as HTMLCanvasElement).getContext("2d")
-        : (offscreenCanvas as OffscreenCanvas).getContext("2d");
-      if (!offCtx) return;
-
-      await renderTimelineFrame({
-        ctx: offCtx as CanvasRenderingContext2D,
-        time: currentTime,
-        canvasWidth: displayWidth,
-        canvasHeight: displayHeight,
-        tracks,
-        mediaFiles,
-        backgroundType: activeProject?.backgroundType,
-        blurIntensity: activeProject?.blurIntensity,
-        backgroundColor:
-          activeProject?.backgroundType === "blur"
-            ? undefined
-            : activeProject?.backgroundColor || "#000000",
-        projectCanvasSize: canvasSize,
-      });
-
-      const imageData = (offCtx as CanvasRenderingContext2D).getImageData(
-        0,
-        0,
-        displayWidth,
-        displayHeight
-      );
-      cacheFrame(
-        currentTime,
-        imageData,
-        tracks,
-        mediaFiles,
-        activeProject,
-        currentScene?.id
-      );
-
-      // Blit offscreen to visible canvas
-      mainCtx.clearRect(0, 0, displayWidth, displayHeight);
-      if ((offscreenCanvas as HTMLCanvasElement).getContext) {
-        mainCtx.drawImage(offscreenCanvas as HTMLCanvasElement, 0, 0);
-      } else {
-        mainCtx.drawImage(
-          offscreenCanvas as unknown as CanvasImageSource,
-          0,
-          0
-        );
-      }
-    };
-
-    void draw();
-  }, [
-    activeElements,
-    currentTime,
-    previewDimensions.width,
-    previewDimensions.height,
-    canvasSize.width,
-    canvasSize.height,
-    activeProject?.backgroundType,
-    activeProject?.backgroundColor,
-    getCachedFrame,
-    cacheFrame,
-    preRenderNearbyFrames,
-    isPlaying,
-  ]);
-
-  // Get media elements for blur background (video/image only)
-  const getBlurBackgroundElements = (): ActiveElement[] => {
-    return activeElements.filter(
-      ({ element, mediaItem }) =>
-        element.type === "media" &&
-        mediaItem &&
-        (mediaItem.type === "video" || mediaItem.type === "image") &&
-        element.mediaId !== "test" // Exclude test elements
-    );
-  };
-
-  const blurBackgroundElements = getBlurBackgroundElements();
-
-  // Render blur background layer (handled by canvas now)
-  const renderBlurBackground = () => null;
-
-  // Render an element (canvas handles visuals now). Audio playback to be implemented via Web Audio.
-  const renderElement = (_elementData: ActiveElement) => null;
+  // Memoize reversed tracks for layer rendering (bottom to top order)
+  const reversedTracks = useMemo(() => [...tracks].reverse(), [tracks]);
 
   return (
     <>
@@ -726,23 +752,46 @@ export function PreviewPanel() {
                     ? "transparent"
                     : activeProject?.backgroundColor || "#000000",
               }}
+              onClick={handlePreviewClick}
             >
-              {renderBlurBackground()}
-              <canvas
-                ref={canvasRef}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: previewDimensions.width,
-                  height: previewDimensions.height,
-                }}
-                aria-label="Video preview canvas"
+              {/* Multi-layer canvas architecture */}
+              <BackgroundCanvas
+                tracks={tracks}
+                currentTime={currentTime}
+                width={previewDimensions.width}
+                height={previewDimensions.height}
+                mediaFiles={mediaFiles}
+                backgroundColor={
+                  activeProject?.backgroundType === "blur"
+                    ? undefined
+                    : activeProject?.backgroundColor || "#000000"
+                }
+                backgroundType={activeProject?.backgroundType}
+                blurIntensity={activeProject?.blurIntensity}
               />
-              {activeElements.length === 0 ? (
-                <></>
-              ) : (
-                activeElements.map((elementData) => renderElement(elementData))
+              {reversedTracks.map((track, index) => (
+                <TrackCanvas
+                  key={track.id}
+                  track={track}
+                  currentTime={currentTime}
+                  width={previewDimensions.width}
+                  height={previewDimensions.height}
+                  mediaFiles={mediaFiles}
+                  projectCanvasSize={canvasSize}
+                  zIndex={index + 1}
+                />
+              ))}
+              {selectedMediaElement && (
+                <MediaTransformOverlay
+                  element={selectedMediaElement.element}
+                  trackId={selectedMediaElement.trackId}
+                  mediaItem={selectedMediaElement.mediaItem}
+                  previewDimensions={previewDimensions}
+                  canvasSize={canvasSize}
+                  onMoveStart={handleMediaMoveStart}
+                  onScaleStart={handleMediaScaleStart}
+                  isTransforming={mediaTransformState.isTransforming}
+                />
               )}
               <LayoutGuideOverlay />
             </div>
@@ -766,10 +815,10 @@ export function PreviewPanel() {
         <FullscreenPreview
           previewDimensions={previewDimensions}
           activeProject={activeProject}
-          renderBlurBackground={renderBlurBackground}
-          activeElements={activeElements}
-          renderElement={renderElement}
-          blurBackgroundElements={blurBackgroundElements}
+          tracks={tracks}
+          reversedTracks={reversedTracks}
+          mediaFiles={mediaFiles}
+          canvasSize={canvasSize}
           hasAnyElements={hasAnyElements}
           toggleExpanded={toggleExpanded}
           currentTime={currentTime}
@@ -952,10 +1001,10 @@ function FullscreenToolbar({
 function FullscreenPreview({
   previewDimensions,
   activeProject,
-  renderBlurBackground,
-  activeElements,
-  renderElement,
-  blurBackgroundElements,
+  tracks,
+  reversedTracks,
+  mediaFiles,
+  canvasSize,
   hasAnyElements,
   toggleExpanded,
   currentTime,
@@ -964,11 +1013,11 @@ function FullscreenPreview({
   getTotalDuration,
 }: {
   previewDimensions: { width: number; height: number };
-  activeProject: any;
-  renderBlurBackground: () => React.ReactNode;
-  activeElements: ActiveElement[];
-  renderElement: (elementData: ActiveElement, index: number) => React.ReactNode;
-  blurBackgroundElements: ActiveElement[];
+  activeProject: TProject | null;
+  tracks: TimelineTrack[];
+  reversedTracks: TimelineTrack[];
+  mediaFiles: MediaFile[];
+  canvasSize: { width: number; height: number };
   hasAnyElements: boolean;
   toggleExpanded: () => void;
   currentTime: number;
@@ -990,16 +1039,33 @@ function FullscreenPreview({
                 : activeProject?.backgroundColor || "#1a1a1a",
           }}
         >
-          {renderBlurBackground()}
-          {activeElements.length === 0 ? (
-            <div className="absolute inset-0 flex items-center justify-center text-white/60">
-              No elements at current time
-            </div>
-          ) : (
-            activeElements.map((elementData, index) =>
-              renderElement(elementData, index)
-            )
-          )}
+          {/* Multi-layer canvas architecture for fullscreen */}
+          <BackgroundCanvas
+            tracks={tracks}
+            currentTime={currentTime}
+            width={previewDimensions.width}
+            height={previewDimensions.height}
+            mediaFiles={mediaFiles}
+            backgroundColor={
+              activeProject?.backgroundType === "blur"
+                ? undefined
+                : activeProject?.backgroundColor || "#1a1a1a"
+            }
+            backgroundType={activeProject?.backgroundType}
+            blurIntensity={activeProject?.blurIntensity}
+          />
+          {reversedTracks.map((track, index) => (
+            <TrackCanvas
+              key={track.id}
+              track={track}
+              currentTime={currentTime}
+              width={previewDimensions.width}
+              height={previewDimensions.height}
+              mediaFiles={mediaFiles}
+              projectCanvasSize={canvasSize}
+              zIndex={index + 1}
+            />
+          ))}
           <LayoutGuideOverlay />
         </div>
       </div>
@@ -1129,6 +1195,125 @@ function PreviewToolbar({
           <Expand className="size-4!" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+// Media transform overlay component for scale/move controls
+function MediaTransformOverlay({
+  element,
+  trackId,
+  mediaItem,
+  previewDimensions,
+  canvasSize,
+  onMoveStart,
+  onScaleStart,
+  isTransforming,
+}: {
+  element: MediaElement;
+  trackId: string;
+  mediaItem: MediaFile;
+  previewDimensions: { width: number; height: number };
+  canvasSize: { width: number; height: number };
+  onMoveStart: (
+    e: React.MouseEvent,
+    element: MediaElement,
+    trackId: string
+  ) => void;
+  onScaleStart: (
+    e: React.MouseEvent,
+    element: MediaElement,
+    trackId: string,
+    handle: ScaleHandle
+  ) => void;
+  isTransforming: boolean;
+}) {
+  // Calculate the display bounds of the media element
+  const mediaW = mediaItem.width || previewDimensions.width;
+  const mediaH = mediaItem.height || previewDimensions.height;
+  const containScale = Math.min(
+    previewDimensions.width / mediaW,
+    previewDimensions.height / mediaH
+  );
+  const elementScale = element.scale ?? 1;
+  const finalScale = containScale * elementScale;
+
+  const drawW = mediaW * finalScale;
+  const drawH = mediaH * finalScale;
+
+  const scaleRatio = previewDimensions.width / canvasSize.width;
+  const offsetX = (element.offsetX ?? 0) * scaleRatio;
+  const offsetY = (element.offsetY ?? 0) * scaleRatio;
+
+  const left = (previewDimensions.width - drawW) / 2 + offsetX;
+  const top = (previewDimensions.height - drawH) / 2 + offsetY;
+
+  const handleSize = 10;
+  const handles: ScaleHandle[] = [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ];
+
+  const getHandlePosition = (handle: ScaleHandle) => {
+    switch (handle) {
+      case "top-left":
+        return { left: -handleSize / 2, top: -handleSize / 2 };
+      case "top-right":
+        return { right: -handleSize / 2, top: -handleSize / 2 };
+      case "bottom-left":
+        return { left: -handleSize / 2, bottom: -handleSize / 2 };
+      case "bottom-right":
+        return { right: -handleSize / 2, bottom: -handleSize / 2 };
+    }
+  };
+
+  const getHandleCursor = (handle: ScaleHandle) => {
+    switch (handle) {
+      case "top-left":
+      case "bottom-right":
+        return "nwse-resize";
+      case "top-right":
+      case "bottom-left":
+        return "nesw-resize";
+    }
+  };
+
+  return (
+    <div
+      className="absolute pointer-events-auto"
+      style={{
+        left,
+        top,
+        width: drawW,
+        height: drawH,
+        zIndex: 1000,
+      }}
+    >
+      {/* Border */}
+      <div
+        className={cn(
+          "absolute inset-0 border-2 border-primary cursor-grab",
+          isTransforming && "border-primary/70"
+        )}
+        onMouseDown={(e) => onMoveStart(e, element, trackId)}
+      />
+
+      {/* Corner handles */}
+      {handles.map((handle) => (
+        <div
+          key={handle}
+          className="absolute bg-primary border border-background rounded-sm pointer-events-auto"
+          style={{
+            width: handleSize,
+            height: handleSize,
+            cursor: getHandleCursor(handle),
+            ...getHandlePosition(handle),
+          }}
+          onMouseDown={(e) => onScaleStart(e, element, trackId, handle)}
+        />
+      ))}
     </div>
   );
 }

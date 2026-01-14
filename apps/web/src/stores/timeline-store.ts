@@ -236,6 +236,11 @@ interface TimelineStore {
       >
     >
   ) => void;
+  updateMediaElement: (
+    trackId: string,
+    elementId: string,
+    updates: Partial<Pick<MediaElement, "scale" | "offsetX" | "offsetY">>
+  ) => void;
   checkElementOverlap: (
     trackId: string,
     startTime: number,
@@ -880,6 +885,24 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
                 ...track,
                 elements: track.elements.map((element) =>
                   element.id === elementId && element.type === "text"
+                    ? { ...element, ...updates }
+                    : element
+                ),
+              }
+            : track
+        )
+      );
+    },
+
+    updateMediaElement: (trackId, elementId, updates) => {
+      get().pushHistory();
+      updateTracksAndSave(
+        get()._tracks.map((track) =>
+          track.id === trackId
+            ? {
+                ...track,
+                elements: track.elements.map((element) =>
+                  element.id === elementId && element.type === "media"
                     ? { ...element, ...updates }
                     : element
                 ),
