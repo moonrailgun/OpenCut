@@ -50,3 +50,22 @@ export interface MediaTransformState {
   elementCenterY: number;
   initialDistance: number;
 }
+
+export type TextTransformMode = "move" | "resize-width" | "resize-scale";
+
+export interface TextTransformState {
+  isTransforming: boolean;
+  mode: TextTransformMode | null;
+  resizeHandle: ScaleHandle | null;
+  elementId: string | null;
+  trackId: string | null;
+  startX: number;
+  startY: number;
+  initialX: number;
+  initialY: number;
+  initialWidth: number;
+  initialScale: number;
+  elementCenterX: number;
+  elementCenterY: number;
+  initialDistance: number;
+}

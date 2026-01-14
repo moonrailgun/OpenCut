@@ -143,11 +143,14 @@ async function renderSingleElement({
   }
   if (element.type === "text") {
     const text = element;
+    const elementScale = text.scale ?? 1;
     const posX = canvasWidth / 2 + text.x * scaleX;
     const posY = canvasHeight / 2 + text.y * scaleY;
+
     ctx.save();
     ctx.translate(posX, posY);
     ctx.rotate((text.rotation * Math.PI) / 180);
+    ctx.scale(elementScale, elementScale);
     ctx.globalAlpha = Math.max(0, Math.min(1, text.opacity));
     const px = text.fontSize * scaleX;
     const weight = text.fontWeight === "bold" ? "bold " : "";
@@ -156,30 +159,32 @@ async function renderSingleElement({
     ctx.fillStyle = text.color;
     ctx.textAlign = text.textAlign as CanvasTextAlign;
     ctx.textBaseline = "middle";
-    const metrics = ctx.measureText(text.content);
-    const hasBoxMetrics =
-      "actualBoundingBoxAscent" in metrics &&
-      "actualBoundingBoxDescent" in metrics;
-    const ascent = hasBoxMetrics
-      ? (
-          metrics as TextMetrics & {
-            actualBoundingBoxAscent: number;
-            actualBoundingBoxDescent: number;
-          }
-        ).actualBoundingBoxAscent
-      : px * 0.8;
-    const descent = hasBoxMetrics
-      ? (
-          metrics as TextMetrics & {
-            actualBoundingBoxAscent: number;
-            actualBoundingBoxDescent: number;
-          }
-        ).actualBoundingBoxDescent
-      : px * 0.2;
-    const textW = metrics.width;
-    const textH = ascent + descent;
+    
     const padX = 8 * scaleX;
     const padY = 4 * scaleX;
+    const lineHeight = px * 1.3;
+    
+    // If width is set, wrap text
+    const containerWidth = text.width ? text.width * scaleX : undefined;
+    let lines: string[];
+    
+    if (containerWidth) {
+      lines = wrapText(ctx, text.content, containerWidth - padX * 2);
+    } else {
+      lines = [text.content];
+    }
+    
+    // Calculate total text dimensions
+    let maxLineWidth = 0;
+    for (const line of lines) {
+      const lineWidth = ctx.measureText(line).width;
+      if (lineWidth > maxLineWidth) maxLineWidth = lineWidth;
+    }
+    const totalTextHeight = lines.length * lineHeight;
+    const textW = containerWidth || maxLineWidth;
+    const textH = totalTextHeight;
+    
+    // Draw background
     if (text.backgroundColor) {
       ctx.save();
       ctx.fillStyle = text.backgroundColor;
@@ -194,9 +199,48 @@ async function renderSingleElement({
       );
       ctx.restore();
     }
-    ctx.fillText(text.content, 0, 0);
+    
+    // Draw each line
+    const startY = -(lines.length - 1) * lineHeight / 2;
+    for (let i = 0; i < lines.length; i++) {
+      const y = startY + i * lineHeight;
+      // Draw stroke first (behind fill)
+      if (text.strokeWidth && text.strokeColor) {
+        ctx.strokeStyle = text.strokeColor;
+        ctx.lineWidth = text.strokeWidth * scaleX;
+        ctx.lineJoin = "round";
+        ctx.strokeText(lines[i], 0, y);
+      }
+      ctx.fillText(lines[i], 0, y);
+    }
+
     ctx.restore();
   }
+}
+
+// Helper function to wrap text
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+  
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const metrics = ctx.measureText(testLine);
+    
+    if (metrics.width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  
+  return lines.length > 0 ? lines : [''];
 }
 
 export interface RenderTrackContext {

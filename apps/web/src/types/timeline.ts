@@ -38,8 +38,13 @@ export interface TextElement extends BaseTimelineElement {
   textDecoration: "none" | "underline" | "line-through";
   x: number; // Position relative to canvas center
   y: number; // Position relative to canvas center
+  width?: number; // Container width for text wrapping
+  scale?: number; // Scale factor (1 = 100%)
   rotation: number; // in degrees
   opacity: number; // 0-1
+  strokeColor?: string; // Text stroke/outline color
+  strokeWidth?: number; // Text stroke width in pixels
+  verticalAlign?: "top" | "middle" | "bottom"; // Vertical position for subtitles
 }
 
 // Typed timeline elements

@@ -1,7 +1,7 @@
 "use client";
 
 import { useTimelineStore } from "@/stores/timeline-store";
-import { TimelineElement, TimelineTrack } from "@/types/timeline";
+import { TimelineElement, TimelineTrack, TextElement } from "@/types/timeline";
 import { useMediaStore } from "@/stores/media-store";
 import { MediaFile } from "@/types/media";
 import { usePlaybackStore } from "@/stores/playback-store";
@@ -22,6 +22,7 @@ import {
 import {
   TextElementDragState,
   MediaTransformState,
+  TextTransformState,
   ScaleHandle,
 } from "@/types/editor";
 import type { TProject } from "@/types/project";
@@ -98,6 +99,24 @@ export function PreviewPanel() {
       initialScale: 1,
       initialOffsetX: 0,
       initialOffsetY: 0,
+      elementCenterX: 0,
+      elementCenterY: 0,
+      initialDistance: 0,
+    });
+
+  const [textTransformState, setTextTransformState] =
+    useState<TextTransformState>({
+      isTransforming: false,
+      mode: null,
+      resizeHandle: null,
+      elementId: null,
+      trackId: null,
+      startX: 0,
+      startY: 0,
+      initialX: 0,
+      initialY: 0,
+      initialWidth: 400,
+      initialScale: 1,
       elementCenterX: 0,
       elementCenterY: 0,
       initialDistance: 0,
@@ -211,6 +230,14 @@ export function PreviewPanel() {
         Math.min(canvasSize.height / 2 - halfHeight, newY)
       );
 
+      // Update store in real-time for smooth visual feedback
+      if (dragState.trackId && dragState.elementId) {
+        updateTextElement(dragState.trackId, dragState.elementId, {
+          x: constrainedX,
+          y: constrainedY,
+        });
+      }
+
       setDragState((prev) => ({
         ...prev,
         currentX: constrainedX,
@@ -219,12 +246,6 @@ export function PreviewPanel() {
     };
 
     const handleMouseUp = () => {
-      if (dragState.isDragging && dragState.trackId && dragState.elementId) {
-        updateTextElement(dragState.trackId, dragState.elementId, {
-          x: dragState.currentX,
-          y: dragState.currentY,
-        });
-      }
       setDragState((prev) => ({ ...prev, isDragging: false }));
     };
 
@@ -245,11 +266,12 @@ export function PreviewPanel() {
 
   const handleTextMouseDown = (
     e: React.MouseEvent<HTMLDivElement>,
-    element: any,
+    element: TextElement,
     trackId: string
   ) => {
     e.preventDefault();
     e.stopPropagation();
+    isTransformingRef.current = true;
 
     const rect = e.currentTarget.getBoundingClientRect();
 
@@ -267,6 +289,174 @@ export function PreviewPanel() {
       elementHeight: rect.height,
     });
   };
+
+  // Handle text element width resize (left/right edge handles)
+  const handleTextWidthResizeStart = (
+    e: React.MouseEvent,
+    element: TextElement,
+    trackId: string,
+    handle: ScaleHandle
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isTransformingRef.current = true;
+
+    const previewRect = previewRef.current?.getBoundingClientRect();
+    if (!previewRect) return;
+
+    const scaleRatio = previewDimensions.width / canvasSize.width;
+
+    // Element center in screen coordinates
+    const elementCenterX =
+      previewRect.left + previewDimensions.width / 2 + element.x * scaleRatio;
+    const elementCenterY =
+      previewRect.top + previewDimensions.height / 2 + element.y * scaleRatio;
+
+    // Calculate initial width based on text content or existing width
+    const elementScale = element.scale ?? 1;
+    const fontSize = element.fontSize * scaleRatio * elementScale;
+    const estimatedWidth = element.content.length * fontSize * 0.6;
+    const initialWidth = element.width || estimatedWidth / scaleRatio / elementScale;
+
+    setTextTransformState({
+      isTransforming: true,
+      mode: "resize-width",
+      resizeHandle: handle,
+      elementId: element.id,
+      trackId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: element.x,
+      initialY: element.y,
+      initialWidth,
+      initialScale: elementScale,
+      elementCenterX,
+      elementCenterY,
+      initialDistance: 0,
+    });
+  };
+
+  // Handle text element scale resize (corner handles)
+  const handleTextScaleResizeStart = (
+    e: React.MouseEvent,
+    element: TextElement,
+    trackId: string,
+    handle: ScaleHandle
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isTransformingRef.current = true;
+
+    const previewRect = previewRef.current?.getBoundingClientRect();
+    if (!previewRect) return;
+
+    const scaleRatio = previewDimensions.width / canvasSize.width;
+
+    // Element center in screen coordinates
+    const elementCenterX =
+      previewRect.left + previewDimensions.width / 2 + element.x * scaleRatio;
+    const elementCenterY =
+      previewRect.top + previewDimensions.height / 2 + element.y * scaleRatio;
+
+    // Calculate initial distance from mouse to element center
+    const dx = e.clientX - elementCenterX;
+    const dy = e.clientY - elementCenterY;
+    const initialDistance = Math.sqrt(dx * dx + dy * dy);
+
+    setTextTransformState({
+      isTransforming: true,
+      mode: "resize-scale",
+      resizeHandle: handle,
+      elementId: element.id,
+      trackId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: element.x,
+      initialY: element.y,
+      initialWidth: element.width || 400,
+      initialScale: element.scale ?? 1,
+      elementCenterX,
+      elementCenterY,
+      initialDistance: initialDistance || 1,
+    });
+  };
+
+  // Handle text transform mouse move and up
+  useEffect(() => {
+    if (!textTransformState.isTransforming) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (textTransformState.mode === "resize-width") {
+        const scaleRatio = previewDimensions.width / canvasSize.width;
+        
+        // Calculate horizontal distance change from start position
+        const deltaX = e.clientX - textTransformState.startX;
+        
+        // Determine resize direction based on handle
+        let widthDelta = deltaX / scaleRatio / textTransformState.initialScale;
+        if (textTransformState.resizeHandle === "top-left" || 
+            textTransformState.resizeHandle === "bottom-left") {
+          widthDelta = -widthDelta;
+        }
+        
+        // Calculate new width (multiply by 2 because we resize from center)
+        const newWidth = Math.max(
+          100,
+          Math.min(canvasSize.width, textTransformState.initialWidth + widthDelta * 2)
+        );
+
+        if (textTransformState.trackId && textTransformState.elementId) {
+          updateTextElement(
+            textTransformState.trackId,
+            textTransformState.elementId,
+            { width: newWidth }
+          );
+        }
+      } else if (textTransformState.mode === "resize-scale") {
+        // Calculate current distance from mouse to element center
+        const dx = e.clientX - textTransformState.elementCenterX;
+        const dy = e.clientY - textTransformState.elementCenterY;
+        const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+        // Scale ratio based on distance change
+        const distanceRatio =
+          currentDistance / textTransformState.initialDistance;
+        const newScale = Math.max(
+          0.1,
+          Math.min(5, textTransformState.initialScale * distanceRatio)
+        );
+
+        if (textTransformState.trackId && textTransformState.elementId) {
+          updateTextElement(
+            textTransformState.trackId,
+            textTransformState.elementId,
+            { scale: newScale }
+          );
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setTextTransformState((prev) => ({
+        ...prev,
+        isTransforming: false,
+        mode: null,
+        resizeHandle: null,
+      }));
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = textTransformState.mode === "resize-width" ? "ew-resize" : "nwse-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [textTransformState, previewDimensions, canvasSize, updateTextElement]);
 
   // Handle media element move (drag from center)
   const handleMediaMoveStart = (
@@ -450,6 +640,31 @@ export function PreviewPanel() {
 
   const selectedMediaElement = getSelectedMediaElement();
 
+  // Get the currently selected text element for transform overlay
+  const getSelectedTextElement = useCallback((): {
+    element: TextElement;
+    trackId: string;
+  } | null => {
+    if (selectedElements.length !== 1) return null;
+
+    const { trackId, elementId } = selectedElements[0];
+    const track = tracks.find((t) => t.id === trackId);
+    const element = track?.elements.find((e) => e.id === elementId);
+
+    if (!element || element.type !== "text") return null;
+
+    // Check if element is visible at current time
+    const elementStart = element.startTime;
+    const elementEnd =
+      element.startTime +
+      (element.duration - element.trimStart - element.trimEnd);
+    if (currentTime < elementStart || currentTime >= elementEnd) return null;
+
+    return { element: element as TextElement, trackId };
+  }, [selectedElements, tracks, currentTime]);
+
+  const selectedTextElement = getSelectedTextElement();
+
   const handlePreviewClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (isTransformingRef.current) {
@@ -487,6 +702,44 @@ export function PreviewPanel() {
 
       // Check from top to bottom (first in array = topmost visually)
       for (const { element, track, mediaItem } of elementsAtTime) {
+        // Check text elements
+        if (element.type === "text") {
+          const scaleRatio = previewDimensions.width / canvasSize.width;
+          const elementScale = element.scale ?? 1;
+          const centerX = previewDimensions.width / 2 + element.x * scaleRatio;
+          const centerY = previewDimensions.height / 2 + element.y * scaleRatio;
+          const fontSize = element.fontSize * scaleRatio * elementScale;
+          const estimatedTextWidth = element.content.length * fontSize * 0.6;
+          const containerWidth = element.width ? element.width * scaleRatio * elementScale : estimatedTextWidth;
+          
+          // Calculate height based on text wrapping
+          const lineHeight = fontSize * 1.3;
+          const charsPerLine = element.width 
+            ? Math.floor((element.width * scaleRatio * elementScale) / (fontSize * 0.6))
+            : element.content.length;
+          const numLines = element.width 
+            ? Math.ceil(element.content.length / Math.max(1, charsPerLine))
+            : 1;
+          const containerHeight = numLines * lineHeight;
+          const padding = 8 * scaleRatio * elementScale;
+
+          const textLeft = centerX - containerWidth / 2 - padding;
+          const textTop = centerY - containerHeight / 2 - padding;
+          const textRight = textLeft + containerWidth + padding * 2;
+          const textBottom = textTop + containerHeight + padding * 2;
+
+          if (
+            clickX >= textLeft &&
+            clickX <= textRight &&
+            clickY >= textTop &&
+            clickY <= textBottom
+          ) {
+            selectElement(track.id, element.id);
+            return;
+          }
+        }
+
+        // Check media elements
         if (element.type === "media" && mediaItem) {
           if (mediaItem.type === "video" || mediaItem.type === "image") {
             const mediaElement = element as MediaElement;
@@ -791,6 +1044,21 @@ export function PreviewPanel() {
                   onMoveStart={handleMediaMoveStart}
                   onScaleStart={handleMediaScaleStart}
                   isTransforming={mediaTransformState.isTransforming}
+                />
+              )}
+              {selectedTextElement && (
+                <TextTransformOverlay
+                  element={selectedTextElement.element}
+                  trackId={selectedTextElement.trackId}
+                  previewDimensions={previewDimensions}
+                  canvasSize={canvasSize}
+                  onMouseDown={handleTextMouseDown}
+                  onWidthResizeStart={handleTextWidthResizeStart}
+                  onScaleResizeStart={handleTextScaleResizeStart}
+                  isTransforming={
+                    (dragState.isDragging && dragState.elementId === selectedTextElement.element.id) ||
+                    (textTransformState.isTransforming && textTransformState.elementId === selectedTextElement.element.id)
+                  }
                 />
               )}
               <LayoutGuideOverlay />
@@ -1195,6 +1463,152 @@ function PreviewToolbar({
           <Expand className="size-4!" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+// Text transform overlay component for text element positioning and resizing
+function TextTransformOverlay({
+  element,
+  trackId,
+  previewDimensions,
+  canvasSize,
+  onMouseDown,
+  onWidthResizeStart,
+  onScaleResizeStart,
+  isTransforming,
+}: {
+  element: TextElement;
+  trackId: string;
+  previewDimensions: { width: number; height: number };
+  canvasSize: { width: number; height: number };
+  onMouseDown: (e: React.MouseEvent<HTMLDivElement>, element: TextElement, trackId: string) => void;
+  onWidthResizeStart: (e: React.MouseEvent, element: TextElement, trackId: string, handle: ScaleHandle) => void;
+  onScaleResizeStart: (e: React.MouseEvent, element: TextElement, trackId: string, handle: ScaleHandle) => void;
+  isTransforming: boolean;
+}) {
+  const scaleRatio = previewDimensions.width / canvasSize.width;
+  const elementScale = element.scale ?? 1;
+  
+  // Calculate position in preview coordinates
+  const centerX = previewDimensions.width / 2 + element.x * scaleRatio;
+  const centerY = previewDimensions.height / 2 + element.y * scaleRatio;
+  
+  // Calculate font size in preview scale (with element scale applied)
+  const fontSize = element.fontSize * scaleRatio * elementScale;
+  
+  // Use element width if set, otherwise estimate based on content
+  const estimatedTextWidth = element.content.length * fontSize * 0.6;
+  const containerWidth = element.width ? element.width * scaleRatio * elementScale : estimatedTextWidth;
+  
+  // Calculate height based on text wrapping
+  const lineHeight = fontSize * 1.3;
+  const charsPerLine = element.width 
+    ? Math.floor((element.width * scaleRatio * elementScale) / (fontSize * 0.6))
+    : element.content.length;
+  const numLines = element.width 
+    ? Math.ceil(element.content.length / Math.max(1, charsPerLine))
+    : 1;
+  const containerHeight = numLines * lineHeight;
+  
+  const padding = 8 * scaleRatio * elementScale;
+  const handleSize = 10;
+  const edgeHandleWidth = 6;
+  const edgeHandleHeight = 24;
+
+  const handles: ScaleHandle[] = [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ];
+
+  const getHandlePosition = (handle: ScaleHandle) => {
+    switch (handle) {
+      case "top-left":
+        return { left: -handleSize / 2, top: -handleSize / 2 };
+      case "top-right":
+        return { right: -handleSize / 2, top: -handleSize / 2 };
+      case "bottom-left":
+        return { left: -handleSize / 2, bottom: -handleSize / 2 };
+      case "bottom-right":
+        return { right: -handleSize / 2, bottom: -handleSize / 2 };
+    }
+  };
+
+  const getHandleCursor = (handle: ScaleHandle) => {
+    switch (handle) {
+      case "top-left":
+      case "bottom-right":
+        return "nwse-resize";
+      case "top-right":
+      case "bottom-left":
+        return "nesw-resize";
+    }
+  };
+
+  return (
+    <div
+      className="absolute pointer-events-auto"
+      style={{
+        left: centerX - containerWidth / 2 - padding,
+        top: centerY - containerHeight / 2 - padding,
+        width: containerWidth + padding * 2,
+        height: containerHeight + padding * 2,
+        zIndex: 1000,
+      }}
+    >
+      {/* Border - drag area */}
+      <div
+        className={cn(
+          "absolute inset-0 border-2 rounded cursor-grab",
+          isTransforming ? "border-primary/70" : "border-primary"
+        )}
+        onMouseDown={(e) => onMouseDown(e, element, trackId)}
+      />
+      
+      {/* Left edge handle for width resize */}
+      <div
+        className="absolute bg-primary border border-background rounded-sm pointer-events-auto"
+        style={{
+          width: edgeHandleWidth,
+          height: edgeHandleHeight,
+          left: -edgeHandleWidth / 2,
+          top: "50%",
+          transform: "translateY(-50%)",
+          cursor: "ew-resize",
+        }}
+        onMouseDown={(e) => onWidthResizeStart(e, element, trackId, "top-left")}
+      />
+      
+      {/* Right edge handle for width resize */}
+      <div
+        className="absolute bg-primary border border-background rounded-sm pointer-events-auto"
+        style={{
+          width: edgeHandleWidth,
+          height: edgeHandleHeight,
+          right: -edgeHandleWidth / 2,
+          top: "50%",
+          transform: "translateY(-50%)",
+          cursor: "ew-resize",
+        }}
+        onMouseDown={(e) => onWidthResizeStart(e, element, trackId, "top-right")}
+      />
+      
+      {/* Corner handles for font size resize */}
+      {handles.map((handle) => (
+        <div
+          key={handle}
+          className="absolute bg-primary border border-background rounded-sm pointer-events-auto"
+          style={{
+            width: handleSize,
+            height: handleSize,
+            cursor: getHandleCursor(handle),
+            ...getHandlePosition(handle),
+          }}
+          onMouseDown={(e) => onScaleResizeStart(e, element, trackId, handle)}
+        />
+      ))}
     </div>
   );
 }

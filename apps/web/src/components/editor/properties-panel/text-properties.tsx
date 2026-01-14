@@ -20,12 +20,135 @@ import {
 } from "./property-item";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { cn, uppercase } from "@/lib/utils";
-import { Grid2x2 } from "lucide-react";
+import { Grid2x2, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useProjectStore } from "@/stores/project-store";
+import {
+  TextStylePreset,
+  TextStyleCategory,
+  getPresetsByCategory,
+} from "@/constants/text-style-presets";
+
+function TextStylePresets({
+  element,
+  trackId,
+  updateTextElement,
+}: {
+  element: TextElement;
+  trackId: string;
+  updateTextElement: (
+    trackId: string,
+    elementId: string,
+    updates: Partial<
+      Pick<
+        TextElement,
+        | "fontSize"
+        | "fontFamily"
+        | "color"
+        | "backgroundColor"
+        | "fontWeight"
+        | "fontStyle"
+        | "textDecoration"
+        | "opacity"
+        | "strokeColor"
+        | "strokeWidth"
+      >
+    >
+  ) => void;
+}) {
+  const [activeCategory, setActiveCategory] =
+    useState<TextStyleCategory>("popular");
+  const currentPresets = getPresetsByCategory(activeCategory);
+
+  const categories: Array<{ id: TextStyleCategory; label: string }> = [
+    { id: "popular", label: "Popular" },
+    { id: "subtitle", label: "Subtitles" },
+    { id: "title", label: "Titles" },
+    { id: "social", label: "Social" },
+    { id: "creative", label: "Creative" },
+    { id: "minimal", label: "Minimal" },
+    { id: "emphasis", label: "Emphasis" },
+  ];
+
+  const applyPreset = (preset: TextStylePreset) => {
+    updateTextElement(trackId, element.id, {
+      fontSize: preset.fontSize,
+      fontFamily: preset.fontFamily,
+      color: preset.color,
+      backgroundColor: preset.backgroundColor,
+      fontWeight: preset.fontWeight,
+      fontStyle: preset.fontStyle,
+      textDecoration: preset.textDecoration,
+      opacity: preset.opacity,
+      strokeColor: preset.strokeColor,
+      strokeWidth: preset.strokeWidth,
+    });
+  };
+
+  return (
+    <PropertyItem direction="column">
+      <PropertyItemLabel>Style Presets</PropertyItemLabel>
+      <PropertyItemValue>
+        <div className="space-y-2">
+          {/* Category tabs */}
+          <div className="flex flex-wrap gap-1">
+            {categories.map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setActiveCategory(cat.id)}
+                className={cn(
+                  "px-2 py-0.5 text-[10px] rounded-md transition-colors",
+                  activeCategory === cat.id
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted hover:bg-muted/80 text-muted-foreground"
+                )}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Style presets grid */}
+          <div className="grid grid-cols-3 gap-1.5">
+            {currentPresets.map((preset) => (
+              <Tooltip key={preset.presetId}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(preset)}
+                    className="flex items-center justify-center h-8 rounded border border-border hover:border-primary/50 transition-colors overflow-hidden bg-zinc-800"
+                  >
+                    <span
+                      className="text-[9px] px-1 truncate select-none leading-tight"
+                      style={{
+                        color: preset.color,
+                        backgroundColor:
+                          preset.backgroundColor === "transparent"
+                            ? undefined
+                            : preset.backgroundColor,
+                        fontWeight: preset.fontWeight,
+                        fontStyle: preset.fontStyle,
+                        opacity: preset.opacity,
+                      }}
+                    >
+                      {preset.presetName}
+                    </span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{preset.presetName}</TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      </PropertyItemValue>
+    </PropertyItem>
+  );
+}
 
 export function TextProperties({
   element,
@@ -36,6 +159,9 @@ export function TextProperties({
 }) {
   const { updateTextElement } = useTimelineStore();
   const { activeTab, setActiveTab } = useTextPropertiesStore();
+  const canvasSize = useProjectStore(
+    (state) => state.activeProject?.canvasSize
+  ) ?? { width: 1920, height: 1080 };
   const containerRef = useRef<HTMLDivElement>(null);
   // Local state for input values to allow temporary empty/invalid states
   const [fontSizeInput, setFontSizeInput] = useState(
@@ -43,6 +169,12 @@ export function TextProperties({
   );
   const [opacityInput, setOpacityInput] = useState(
     Math.round(element.opacity * 100).toString()
+  );
+  const [widthInput, setWidthInput] = useState(
+    (element.width || 400).toString()
+  );
+  const [scaleInput, setScaleInput] = useState(
+    Math.round((element.scale ?? 1) * 100).toString()
   );
 
   // Track the last selected color for toggling
@@ -104,6 +236,56 @@ export function TextProperties({
     updateTextElement(trackId, element.id, { opacity: opacityPercent / 100 });
   };
 
+  const handleWidthChange = (value: string) => {
+    setWidthInput(value);
+
+    if (value.trim() !== "") {
+      const width = parseAndValidateNumber(
+        value,
+        100,
+        canvasSize.width,
+        element.width || 400
+      );
+      updateTextElement(trackId, element.id, { width });
+    }
+  };
+
+  const handleWidthBlur = () => {
+    const width = parseAndValidateNumber(
+      widthInput,
+      100,
+      canvasSize.width,
+      element.width || 400
+    );
+    setWidthInput(width.toString());
+    updateTextElement(trackId, element.id, { width });
+  };
+
+  const handleScaleChange = (value: string) => {
+    setScaleInput(value);
+
+    if (value.trim() !== "") {
+      const scalePercent = parseAndValidateNumber(
+        value,
+        10,
+        500,
+        Math.round((element.scale ?? 1) * 100)
+      );
+      updateTextElement(trackId, element.id, { scale: scalePercent / 100 });
+    }
+  };
+
+  const handleScaleBlur = () => {
+    const scalePercent = parseAndValidateNumber(
+      scaleInput,
+      10,
+      500,
+      Math.round((element.scale ?? 1) * 100)
+    );
+    setScaleInput(scalePercent.toString());
+    updateTextElement(trackId, element.id, { scale: scalePercent / 100 });
+  };
+
   // Update last selected color when a new color is picked
   const handleColorChange = (color: string) => {
     if (color !== "transparent") {
@@ -131,7 +313,7 @@ export function TextProperties({
         label: t.label,
         content:
           t.value === "transform" ? (
-            <div className="space-y-6"></div>
+            <div className="space-y-6" />
           ) : (
             <div className="space-y-6">
               <Textarea
@@ -143,6 +325,11 @@ export function TextProperties({
                     content: e.target.value,
                   })
                 }
+              />
+              <TextStylePresets
+                element={element}
+                trackId={trackId}
+                updateTextElement={updateTextElement}
               />
               <PropertyItem direction="column">
                 <PropertyItemLabel>Font</PropertyItemLabel>
@@ -267,6 +454,71 @@ export function TextProperties({
                 </PropertyItemValue>
               </PropertyItem>
               <PropertyItem direction="column">
+                <PropertyItemLabel>Container Width</PropertyItemLabel>
+                <PropertyItemValue>
+                  <div className="flex items-center gap-2">
+                    <Slider
+                      value={[element.width || 400]}
+                      min={100}
+                      max={canvasSize.width}
+                      step={10}
+                      onValueChange={([value]) => {
+                        updateTextElement(trackId, element.id, {
+                          width: value,
+                        });
+                        setWidthInput(value.toString());
+                      }}
+                      className="w-full"
+                    />
+                    <Input
+                      type="number"
+                      value={widthInput}
+                      min={100}
+                      max={canvasSize.width}
+                      onChange={(e) => handleWidthChange(e.target.value)}
+                      onBlur={handleWidthBlur}
+                      className="w-14 px-2 !text-xs h-7 rounded-sm text-center bg-panel-accent
+               [appearance:textfield]
+               [&::-webkit-outer-spin-button]:appearance-none
+               [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                  </div>
+                </PropertyItemValue>
+              </PropertyItem>
+              <PropertyItem direction="column">
+                <PropertyItemLabel>Scale</PropertyItemLabel>
+                <PropertyItemValue>
+                  <div className="flex items-center gap-2">
+                    <Slider
+                      value={[Math.round((element.scale ?? 1) * 100)]}
+                      min={10}
+                      max={500}
+                      step={1}
+                      onValueChange={([value]) => {
+                        updateTextElement(trackId, element.id, {
+                          scale: value / 100,
+                        });
+                        setScaleInput(value.toString());
+                      }}
+                      className="w-full"
+                    />
+                    <Input
+                      type="number"
+                      value={scaleInput}
+                      min={10}
+                      max={500}
+                      onChange={(e) => handleScaleChange(e.target.value)}
+                      onBlur={handleScaleBlur}
+                      className="w-14 px-2 !text-xs h-7 rounded-sm text-center bg-panel-accent
+               [appearance:textfield]
+               [&::-webkit-outer-spin-button]:appearance-none
+               [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    <span className="text-xs text-muted-foreground">%</span>
+                  </div>
+                </PropertyItemValue>
+              </PropertyItem>
+              <PropertyItem direction="column">
                 <PropertyItemLabel>Color</PropertyItemLabel>
                 <PropertyItemValue>
                   <ColorPicker
@@ -358,6 +610,109 @@ export function TextProperties({
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent>Transparent background</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </PropertyItemValue>
+              </PropertyItem>
+              <PropertyItem direction="column">
+                <PropertyItemLabel>Stroke</PropertyItemLabel>
+                <PropertyItemValue>
+                  <div className="flex items-center gap-2">
+                    <ColorPicker
+                      value={uppercase(
+                        (element.strokeColor || "#000000").replace("#", "")
+                      )}
+                      onChange={(color) =>
+                        updateTextElement(trackId, element.id, {
+                          strokeColor: `#${color}`,
+                          strokeWidth: element.strokeWidth || 2,
+                        })
+                      }
+                      containerRef={containerRef}
+                      className={element.strokeWidth ? "" : "opacity-50"}
+                    />
+                    <Input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={element.strokeWidth || 0}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        updateTextElement(trackId, element.id, {
+                          strokeWidth: value,
+                          strokeColor: element.strokeColor || "#000000",
+                        });
+                      }}
+                      className="w-16 h-8"
+                    />
+                    <span className="text-xs text-muted-foreground">px</span>
+                  </div>
+                </PropertyItemValue>
+              </PropertyItem>
+              <PropertyItem direction="column">
+                <PropertyItemLabel>Text Align</PropertyItemLabel>
+                <PropertyItemValue>
+                  <div className="flex items-center gap-2">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant={
+                            element.textAlign === "left" ? "default" : "outline"
+                          }
+                          size="sm"
+                          onClick={() =>
+                            updateTextElement(trackId, element.id, {
+                              textAlign: "left",
+                            })
+                          }
+                          className="h-8 px-3"
+                        >
+                          <AlignLeft className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Left</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant={
+                            element.textAlign === "center"
+                              ? "default"
+                              : "outline"
+                          }
+                          size="sm"
+                          onClick={() =>
+                            updateTextElement(trackId, element.id, {
+                              textAlign: "center",
+                            })
+                          }
+                          className="h-8 px-3"
+                        >
+                          <AlignCenter className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Center</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant={
+                            element.textAlign === "right"
+                              ? "default"
+                              : "outline"
+                          }
+                          size="sm"
+                          onClick={() =>
+                            updateTextElement(trackId, element.id, {
+                              textAlign: "right",
+                            })
+                          }
+                          className="h-8 px-3"
+                        >
+                          <AlignRight className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Right</TooltipContent>
                     </Tooltip>
                   </div>
                 </PropertyItemValue>

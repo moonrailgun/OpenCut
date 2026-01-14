@@ -3,7 +3,7 @@ import { TIMELINE_CONSTANTS } from "./timeline-constants";
 
 export const DEFAULT_TEXT_ELEMENT: Omit<
   TextElement,
-  "id"
+  "id" | "verticalAlign"
 > = {
   type: "text",
   name: "Text",

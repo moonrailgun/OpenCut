@@ -231,8 +231,12 @@ interface TimelineStore {
         | "textDecoration"
         | "x"
         | "y"
+        | "width"
+        | "scale"
         | "rotation"
         | "opacity"
+        | "strokeColor"
+        | "strokeWidth"
       >
     >
   ) => void;
@@ -1881,7 +1885,7 @@ function buildTextElement(
 ): CreateTimelineElement {
   const t = raw as Partial<TextElement>;
 
-  return {
+  const element: CreateTimelineElement = {
     type: "text",
     name: t.name ?? DEFAULT_TEXT_ELEMENT.name,
     content: t.content ?? DEFAULT_TEXT_ELEMENT.content,
@@ -1909,4 +1913,20 @@ function buildTextElement(
     opacity:
       typeof t.opacity === "number" ? t.opacity : DEFAULT_TEXT_ELEMENT.opacity,
   };
+
+  // Add optional properties if set
+  if (typeof t.width === "number") {
+    (element as TextElement).width = t.width;
+  }
+  if (typeof t.scale === "number") {
+    (element as TextElement).scale = t.scale;
+  }
+  if (t.strokeColor) {
+    (element as TextElement).strokeColor = t.strokeColor;
+  }
+  if (typeof t.strokeWidth === "number") {
+    (element as TextElement).strokeWidth = t.strokeWidth;
+  }
+
+  return element;
 }
