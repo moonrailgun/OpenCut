@@ -4,6 +4,7 @@ import { useTimelineStore } from "./timeline-store";
 import { generateUUID } from "@/lib/utils";
 import { MediaType, MediaFile } from "@/types/media";
 import { videoCache } from "@/lib/video-cache";
+import { preloadImage } from "@/lib/timeline-renderer";
 
 interface MediaStore {
   mediaFiles: MediaFile[];
@@ -241,6 +242,26 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       );
 
       set({ mediaFiles: updatedMediaItems });
+
+      // Preload media caches in background for faster first frame display
+      const preloadPromises: Promise<void>[] = [];
+      for (const item of updatedMediaItems) {
+        if (item.type === "video" && item.file) {
+          preloadPromises.push(videoCache.preload(item.id, item.file));
+        } else if (item.type === "image") {
+          preloadPromises.push(preloadImage(item));
+        }
+      }
+
+      // Trigger re-render after preloading completes by updating mediaFiles reference
+      if (preloadPromises.length > 0) {
+        Promise.all(preloadPromises).then(() => {
+          const currentFiles = get().mediaFiles;
+          if (currentFiles.length > 0) {
+            set({ mediaFiles: [...currentFiles] });
+          }
+        });
+      }
     } catch (error) {
       console.error("Failed to load media items:", error);
     } finally {

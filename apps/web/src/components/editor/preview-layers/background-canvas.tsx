@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useRef, useEffect } from "react";
+import { memo, useRef, useEffect, useCallback } from "react";
 import { renderBackgroundFrame } from "@/lib/timeline-renderer";
 import type { TimelineTrack } from "@/types/timeline";
 import type { MediaFile } from "@/types/media";
@@ -29,8 +29,9 @@ function BackgroundCanvasComponent({
 }: BackgroundCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderingRef = useRef(false);
+  const pendingRenderRef = useRef(false);
 
-  useEffect(() => {
+  const doRender = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas || width <= 0 || height <= 0) return;
 
@@ -45,22 +46,32 @@ function BackgroundCanvasComponent({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    if (renderingRef.current) return;
+    if (renderingRef.current) {
+      pendingRenderRef.current = true;
+      return;
+    }
     renderingRef.current = true;
+    pendingRenderRef.current = false;
 
-    renderBackgroundFrame({
-      ctx,
-      time: currentTime,
-      canvasWidth: displayWidth,
-      canvasHeight: displayHeight,
-      tracks,
-      mediaFiles,
-      backgroundColor,
-      backgroundType,
-      blurIntensity,
-    }).finally(() => {
+    try {
+      await renderBackgroundFrame({
+        ctx,
+        time: currentTime,
+        canvasWidth: displayWidth,
+        canvasHeight: displayHeight,
+        tracks,
+        mediaFiles,
+        backgroundColor,
+        backgroundType,
+        blurIntensity,
+      });
+    } finally {
       renderingRef.current = false;
-    });
+      if (pendingRenderRef.current) {
+        pendingRenderRef.current = false;
+        doRender();
+      }
+    }
   }, [
     tracks,
     currentTime,
@@ -71,6 +82,10 @@ function BackgroundCanvasComponent({
     backgroundType,
     blurIntensity,
   ]);
+
+  useEffect(() => {
+    doRender();
+  }, [doRender]);
 
   return (
     <canvas
@@ -98,6 +113,9 @@ export const BackgroundCanvas = memo(
     if (prevProps.backgroundColor !== nextProps.backgroundColor) return false;
     if (prevProps.backgroundType !== nextProps.backgroundType) return false;
     if (prevProps.blurIntensity !== nextProps.blurIntensity) return false;
+
+    // Check if mediaFiles reference changed (for preload completion trigger)
+    if (prevProps.mediaFiles !== nextProps.mediaFiles) return false;
 
     // For blur background, we need to check if any video/image element changed
     if (prevProps.backgroundType === "blur") {

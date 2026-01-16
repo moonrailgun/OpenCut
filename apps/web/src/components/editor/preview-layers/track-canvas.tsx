@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useRef, useEffect } from "react";
+import { memo, useRef, useEffect, useCallback } from "react";
 import { renderTrackFrame } from "@/lib/timeline-renderer";
 import type { TimelineTrack } from "@/types/timeline";
 import type { MediaFile } from "@/types/media";
@@ -26,8 +26,9 @@ function TrackCanvasComponent({
 }: TrackCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderingRef = useRef(false);
+  const pendingRenderRef = useRef(false);
 
-  useEffect(() => {
+  const doRender = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas || width <= 0 || height <= 0) return;
 
@@ -42,22 +43,35 @@ function TrackCanvasComponent({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Skip if already rendering
-    if (renderingRef.current) return;
+    if (renderingRef.current) {
+      pendingRenderRef.current = true;
+      return;
+    }
     renderingRef.current = true;
+    pendingRenderRef.current = false;
 
-    renderTrackFrame({
-      ctx,
-      time: currentTime,
-      canvasWidth: displayWidth,
-      canvasHeight: displayHeight,
-      track,
-      mediaFiles,
-      projectCanvasSize,
-    }).finally(() => {
+    try {
+      await renderTrackFrame({
+        ctx,
+        time: currentTime,
+        canvasWidth: displayWidth,
+        canvasHeight: displayHeight,
+        track,
+        mediaFiles,
+        projectCanvasSize,
+      });
+    } finally {
       renderingRef.current = false;
-    });
+      if (pendingRenderRef.current) {
+        pendingRenderRef.current = false;
+        doRender();
+      }
+    }
   }, [track, currentTime, width, height, mediaFiles, projectCanvasSize]);
+
+  useEffect(() => {
+    doRender();
+  }, [doRender]);
 
   return (
     <canvas
@@ -90,6 +104,9 @@ export const TrackCanvas = memo(
       prevProps.projectCanvasSize.height !== nextProps.projectCanvasSize.height
     )
       return false;
+
+    // Check if mediaFiles reference changed (for preload completion trigger)
+    if (prevProps.mediaFiles !== nextProps.mediaFiles) return false;
 
     // Deep compare track elements
     if (prevProps.track.id !== nextProps.track.id) return false;

@@ -153,6 +153,17 @@ export class VideoCache {
     }
   }
 
+  // Preload video sink and first frame for faster initial display
+  async preload(mediaId: string, file: File): Promise<void> {
+    try {
+      await this.ensureSink(mediaId, file);
+      // Preload first frame at time 0
+      await this.getFrameAt(mediaId, file, 0);
+    } catch (error) {
+      console.warn(`Failed to preload video ${mediaId}:`, error);
+    }
+  }
+
   clearVideo(mediaId: string): void {
     const sinkData = this.sinks.get(mediaId);
     if (sinkData) {

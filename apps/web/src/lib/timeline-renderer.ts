@@ -69,6 +69,15 @@ async function getImageElement(
   return img;
 }
 
+// Preload image into cache for faster initial display
+export async function preloadImage(mediaItem: MediaFile): Promise<void> {
+  try {
+    await getImageElement(mediaItem);
+  } catch (error) {
+    console.warn(`Failed to preload image ${mediaItem.id}:`, error);
+  }
+}
+
 // Render a single element (shared logic)
 async function renderSingleElement({
   ctx,
@@ -159,21 +168,21 @@ async function renderSingleElement({
     ctx.fillStyle = text.color;
     ctx.textAlign = text.textAlign as CanvasTextAlign;
     ctx.textBaseline = "middle";
-    
+
     const padX = 8 * scaleX;
     const padY = 4 * scaleX;
     const lineHeight = px * 1.3;
-    
+
     // If width is set, wrap text
     const containerWidth = text.width ? text.width * scaleX : undefined;
     let lines: string[];
-    
+
     if (containerWidth) {
       lines = wrapText(ctx, text.content, containerWidth - padX * 2);
     } else {
       lines = [text.content];
     }
-    
+
     // Calculate total text dimensions
     let maxLineWidth = 0;
     for (const line of lines) {
@@ -183,7 +192,7 @@ async function renderSingleElement({
     const totalTextHeight = lines.length * lineHeight;
     const textW = containerWidth || maxLineWidth;
     const textH = totalTextHeight;
-    
+
     // Draw background
     if (text.backgroundColor) {
       ctx.save();
@@ -199,9 +208,9 @@ async function renderSingleElement({
       );
       ctx.restore();
     }
-    
+
     // Draw each line
-    const startY = -(lines.length - 1) * lineHeight / 2;
+    const startY = (-(lines.length - 1) * lineHeight) / 2;
     for (let i = 0; i < lines.length; i++) {
       const y = startY + i * lineHeight;
       // Draw stroke first (behind fill)
@@ -219,15 +228,19 @@ async function renderSingleElement({
 }
 
 // Helper function to wrap text
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const words = text.split(' ');
+function wrapText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+): string[] {
+  const words = text.split(" ");
   const lines: string[] = [];
-  let currentLine = '';
-  
+  let currentLine = "";
+
   for (const word of words) {
     const testLine = currentLine ? `${currentLine} ${word}` : word;
     const metrics = ctx.measureText(testLine);
-    
+
     if (metrics.width > maxWidth && currentLine) {
       lines.push(currentLine);
       currentLine = word;
@@ -235,12 +248,12 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
       currentLine = testLine;
     }
   }
-  
+
   if (currentLine) {
     lines.push(currentLine);
   }
-  
-  return lines.length > 0 ? lines : [''];
+
+  return lines.length > 0 ? lines : [""];
 }
 
 export interface RenderTrackContext {
